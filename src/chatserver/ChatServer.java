@@ -1,32 +1,26 @@
 package chatserver;
 
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 
 /**
- * A multithreaded chat room server.  When a client connects the
- * server requests a screen name by sending the client the
- * text "SUBMITNAME", and keeps requesting a name until
- * a unique one is received.  After a client submits a unique
- * name, the server acknowledges with "NAMEACCEPTED".  Then
- * all messages from that client will be broadcast to all other
- * clients that have submitted a unique screen name.  The
- * broadcast messages are prefixed with "MESSAGE ".
- *
- * Because this is just a teaching example to illustrate a simple
- * chat server, there are a few features that have been left out.
+ * A multithreaded chat room server. When a client connects the server requests a screen name by sending the client the
+ * text "SUBMITNAME", and keeps requesting a name until a unique one is received. After a client submits a unique
+ * name, the server acknowledges with "NAMEACCEPTED". Then all messages from that client will be broadcast to all other
+ * clients that have submitted a unique screen name. The broadcast messages are prefixed with "MESSAGE ".
+ * <p>
+ * Because this is just a teaching example to illustrate a simple chat server, there are a few features that have been left out.
  * Two are very useful and belong in production code:
- *
- *     1. The protocol should be enhanced so that the client can
- *        send clean disconnect messages to the server.
- *
- *     2. The server should do some logging.
+ * <p>
+ * 1. The protocol should be enhanced so that the client can send clean disconnect messages to the server.
+ * 2. The server should do some logging.
  */
 public class ChatServer {
 
@@ -36,38 +30,43 @@ public class ChatServer {
     private static final int PORT = 9001;
 
     /**
-     * The set of all names of clients in the chat room.  Maintained
+     * The set of all names of clients in the chat room. Maintained
      * so that we can check that new clients are not registering name
      * already in use.
      */
     private static HashSet<String> names = new HashSet<String>();
 
     /**
-     * The set of all the print writers for all the clients.  This
+     * The set of all the print writers for all the clients. This
      * set is kept so we can easily broadcast messages.
      */
     private static HashSet<PrintWriter> writers = new HashSet<PrintWriter>();
 
     /**
-     * The appplication main method, which just listens on a port and
+     * The map to store the PrintWriter objects along with the client names
+     */
+    private static Map<String, PrintWriter> clientMap = new HashMap<>();
+
+    /**
+     * The application main method, which just listens on a port and
      * spawns handler threads.
      */
     public static void main(String[] args) throws Exception {
         System.out.println("The chat server is running.");
-        ServerSocket listener = new ServerSocket(PORT);
+        ServerSocket serverSocket = new ServerSocket(PORT);
         try {
             while (true) {
-            	Socket socket  = listener.accept();
+                Socket socket = serverSocket.accept();
                 Thread handlerThread = new Thread(new Handler(socket));
                 handlerThread.start();
             }
         } finally {
-            listener.close();
+            serverSocket.close();
         }
     }
 
     /**
-     * A handler thread class.  Handlers are spawned from the listening
+     * A handler thread class. Handlers are spawned from the listening
      * loop and are responsible for a dealing with a single client
      * and broadcasting its messages.
      */
@@ -94,65 +93,50 @@ public class ChatServer {
          */
         public void run() {
             try {
-
                 // Create character streams for the socket.
-                in = new BufferedReader(new InputStreamReader(
-                    socket.getInputStream()));
+                in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
                 out = new PrintWriter(socket.getOutputStream(), true);
 
-                // Request a name from this client.  Keep requesting until
-                // a name is submitted that is not already used.  Note that
-                // checking for the existence of a name and adding the name
-                // must be done while locking the set of names.
+                // Request a name from this client.
                 while (true) {
                     out.println("SUBMITNAME");
                     name = in.readLine();
                     if (name == null) {
                         return;
                     }
-                    
-                    // TODO: Add code to ensure the thread safety of the
-                    // the shared variable 'names'
-                    if (!names.contains(name)) {
+
+                    synchronized (names) {
+                        if (!names.contains(name)) {
                             names.add(name);
+                            clientMap.put(name, out);  // Store the PrintWriter along with the name
                             break;
                         }
-                    
-                 }
+                    }
+                }
 
-                // Now that a successful name has been chosen, add the
-                // socket's print writer to the set of all writers so
-                // this client can receive broadcast messages.
+                // Acknowledge the name and register the output stream.
                 out.println("NAMEACCEPTED");
                 writers.add(out);
-                
-                // TODO: You may have to add some code here to broadcast all clients the new
-                // client's name for the task 9 on the lab sheet. 
 
-                
+                // Broadcast all clients the new client's name.
+                broadcast("NEWCLIENT " + name);
+
                 // Accept messages from this client and broadcast them.
-                // Ignore other clients that cannot be broadcasted to.
                 while (true) {
                     String input = in.readLine();
                     if (input == null) {
                         return;
                     }
-                    
-                    // TODO: Add code to send a message to a specific client and not
-                    // all clients. You may have to use a HashMap to store the sockets along 
-                    // with the chat client names
-                    for (PrintWriter writer : writers) {
-                        writer.println("MESSAGE " + name + ": " + input);
-                    }
+                    broadcast("MESSAGE " + name + ": " + input);
                 }
-            }// TODO: Handle the SocketException here to handle a client closing the socket
-            catch (IOException e) {
+            } catch (IOException e) {
                 System.out.println(e);
             } finally {
-                // This client is going down!  Remove its name and its print
-                // writer from the sets, and close its socket.
                 if (name != null) {
-                    names.remove(name);
+                    synchronized (names) {
+                        names.remove(name);
+                    }
+                    clientMap.remove(name);  // Remove the client from the clientMap
                 }
                 if (out != null) {
                     writers.remove(out);
@@ -160,7 +144,27 @@ public class ChatServer {
                 try {
                     socket.close();
                 } catch (IOException e) {
+                    System.out.println(e);
                 }
+            }
+        }
+
+        /**
+         * Broadcast a message to all clients
+         */
+        private void broadcast(String message) {
+            for (PrintWriter writer : writers) {
+                writer.println(message);
+            }
+        }
+
+        /**
+         * Send a message to a specific client
+         */
+        private void sendMessageToClient(String clientName, String message) {
+            PrintWriter writer = clientMap.get(clientName);
+            if (writer != null) {
+                writer.println(message);
             }
         }
     }
